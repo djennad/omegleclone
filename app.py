@@ -6,7 +6,7 @@ import os
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 
 # Store waiting users and active pairs
 waiting_users = []

@@ -1,1 +1,1 @@
-web: gunicorn --worker-class eventlet -w 1 --log-file=- --timeout 120 app:app
+web: gunicorn --worker-class gevent --worker-connections 1000 --timeout 120 app:app
