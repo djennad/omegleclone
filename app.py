@@ -6,7 +6,7 @@ import os
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, async_mode='gevent', cors_allowed_origins="*")
 
 # Store waiting users and active pairs
 waiting_users = []
@@ -86,6 +86,5 @@ def handle_disconnect():
                 del active_pairs[partner_id]
 
 if __name__ == '__main__':
-    # Use 0.0.0.0 to make the server publicly available
     port = int(os.environ.get("PORT", 5000))
     socketio.run(app, host='0.0.0.0', port=port)
