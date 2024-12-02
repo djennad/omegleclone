@@ -6,7 +6,13 @@ import os
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
-socketio = SocketIO(app, async_mode='gevent', cors_allowed_origins="*")
+socketio = SocketIO(app, 
+                   cors_allowed_origins="*",
+                   async_mode='gevent',
+                   ping_timeout=60,
+                   ping_interval=25,
+                   logger=True,
+                   engineio_logger=True)
 
 # Store waiting users and active pairs
 waiting_users = []
@@ -15,6 +21,15 @@ active_pairs = {}
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
+
+@socketio.on('connect')
+def handle_connect():
+    print('Client connected')
+    emit('connected')
 
 @socketio.on('join')
 def on_join(data):

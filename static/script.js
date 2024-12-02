@@ -1,4 +1,11 @@
-const socket = io();
+const socket = io({
+    transports: ['websocket'],
+    upgrade: false,
+    reconnection: true,
+    reconnectionAttempts: 5,
+    reconnectionDelay: 1000
+});
+
 const userId = Math.random().toString(36).substr(2, 9);
 let currentRoom = null;
 let localStream = null;
@@ -93,9 +100,21 @@ async function startNewChat() {
 
 // Socket event handlers
 socket.on('connect', () => {
+    console.log('Connected to server');
+    statusDiv.textContent = 'Connected to server';
     setupMediaStream().then(() => {
         startNewChat();
     });
+});
+
+socket.on('connect_error', (error) => {
+    console.error('Connection error:', error);
+    statusDiv.textContent = 'Connection error. Retrying...';
+});
+
+socket.on('disconnect', () => {
+    console.log('Disconnected from server');
+    statusDiv.textContent = 'Disconnected from server. Reconnecting...';
 });
 
 socket.on('waiting', () => {
