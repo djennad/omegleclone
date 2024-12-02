@@ -26,86 +26,43 @@ const toggleVideoButton = document.getElementById('toggle-video');
 const localVideo = document.getElementById('localVideo');
 const remoteVideo = document.getElementById('remoteVideo');
 
-const configuration = {
-    iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }
-    ]
-};
+function updateStatus(message) {
+    console.log(message);
+    statusDiv.textContent = message;
+}
 
 async function setupMediaStream() {
     try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true
+        });
         localVideo.srcObject = localStream;
         isVideoEnabled = true;
         toggleVideoButton.textContent = 'Disable Video';
+        return true;
     } catch (error) {
         console.error('Error accessing media devices:', error);
-        statusDiv.textContent = 'Failed to access camera/microphone';
+        updateStatus('Could not access camera/microphone');
+        return false;
     }
 }
 
-async function createPeerConnection() {
-    peerConnection = new RTCPeerConnection(configuration);
-
-    // Add local stream
-    if (localStream) {
-        localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
-        });
+function startNewChat() {
+    if (currentRoom) {
+        socket.emit('leave', { userId });
     }
-
-    // Handle incoming stream
-    peerConnection.ontrack = event => {
-        remoteVideo.srcObject = event.streams[0];
-    };
-
-    // Handle ICE candidates
-    peerConnection.onicecandidate = event => {
-        if (event.candidate) {
-            socket.emit('ice_candidate', {
-                userId: userId,
-                candidate: event.candidate
-            });
-        }
-    };
-
-    return peerConnection;
-}
-
-async function handleVideoToggle() {
-    if (isVideoEnabled) {
-        localStream.getTracks().forEach(track => track.stop());
-        localVideo.srcObject = null;
-        isVideoEnabled = false;
-        toggleVideoButton.textContent = 'Enable Video';
-    } else {
-        await setupMediaStream();
-    }
-}
-
-async function startNewChat() {
-    // Clean up previous connection
-    if (peerConnection) {
-        peerConnection.close();
-        peerConnection = null;
-    }
-
-    // Clear chat box and disable inputs
+    
+    // Reset UI
     chatBox.innerHTML = '';
     messageInput.value = '';
     messageInput.disabled = true;
     sendButton.disabled = true;
-    statusDiv.textContent = 'Looking for a partner...';
-    statusDiv.style.display = 'block';
     remoteVideo.srcObject = null;
     
-    // Join the chat queue
-    socket.emit('join', { userId: userId });
-}
-
-function updateStatus(message) {
-    console.log(message);
-    statusDiv.textContent = message;
+    // Join new chat
+    updateStatus('Looking for a partner...');
+    socket.emit('join', { userId });
 }
 
 // Socket event handlers
@@ -133,6 +90,10 @@ socket.on('connect_error', (error) => {
 
 socket.on('disconnect', () => {
     updateStatus('Disconnected from server. Reconnecting...');
+    if (currentRoom) {
+        socket.emit('leave', { userId });
+        currentRoom = null;
+    }
 });
 
 socket.on('connected', (data) => {
@@ -146,89 +107,159 @@ socket.on('waiting', () => {
 
 socket.on('chat_start', async (data) => {
     currentRoom = data.room;
+    messageInput.disabled = false;
+    sendButton.disabled = false;
     updateStatus('Connected! Starting video...');
     
-    peerConnection = await createPeerConnection();
-    
-    // Create and send offer if initiator
-    if (data.isInitiator) {
+    try {
+        peerConnection = await createPeerConnection();
+        // Add local stream
+        localStream.getTracks().forEach(track => {
+            peerConnection.addTrack(track, localStream);
+        });
+        
+        // Create and send offer
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
         socket.emit('video_offer', {
-            userId: userId,
+            userId,
             offer: offer
         });
+    } catch (error) {
+        console.error('Error setting up WebRTC:', error);
+        updateStatus('Failed to setup video chat');
     }
-    
-    messageInput.disabled = false;
-    sendButton.disabled = false;
 });
 
 socket.on('video_offer', async (data) => {
-    if (!peerConnection) {
+    try {
         peerConnection = await createPeerConnection();
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+        
+        // Add local stream
+        localStream.getTracks().forEach(track => {
+            peerConnection.addTrack(track, localStream);
+        });
+        
+        // Create and send answer
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        socket.emit('video_answer', {
+            userId,
+            answer: answer
+        });
+    } catch (error) {
+        console.error('Error handling video offer:', error);
     }
-    
-    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
-    const answer = await peerConnection.createAnswer();
-    await peerConnection.setLocalDescription(answer);
-    
-    socket.emit('video_answer', {
-        userId: userId,
-        answer: answer
-    });
 });
 
 socket.on('video_answer', async (data) => {
-    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-});
-
-socket.on('ice_candidate', async (data) => {
-    if (peerConnection) {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+    try {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+    } catch (error) {
+        console.error('Error handling video answer:', error);
     }
 });
 
-socket.on('message', (data) => {
-    addMessage(data.message, false);
+socket.on('ice_candidate', async (data) => {
+    try {
+        if (data.candidate) {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+        }
+    } catch (error) {
+        console.error('Error handling ICE candidate:', error);
+    }
 });
 
 socket.on('partner_disconnected', () => {
     updateStatus('Partner disconnected. Start a new chat!');
     messageInput.disabled = true;
     sendButton.disabled = true;
-    currentRoom = null;
-    remoteVideo.srcObject = null;
     if (peerConnection) {
         peerConnection.close();
         peerConnection = null;
     }
+    remoteVideo.srcObject = null;
+    currentRoom = null;
 });
 
-function addMessage(message, isSent) {
-    const messageDiv = document.createElement('div');
-    messageDiv.classList.add('message');
-    messageDiv.classList.add(isSent ? 'sent' : 'received');
-    messageDiv.textContent = message;
-    chatBox.appendChild(messageDiv);
-    chatBox.scrollTop = chatBox.scrollHeight;
-}
-
-// Event listeners
-sendButton.addEventListener('click', () => {
-    const message = messageInput.value.trim();
-    if (message && currentRoom) {
-        socket.emit('message', { userId: userId, message: message });
-        addMessage(message, true);
-        messageInput.value = '';
-    }
-});
+// UI Event Listeners
+newChatButton.addEventListener('click', startNewChat);
 
 messageInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-        sendButton.click();
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
     }
 });
 
-toggleVideoButton.addEventListener('click', handleVideoToggle);
-newChatButton.addEventListener('click', startNewChat);
+sendButton.addEventListener('click', sendMessage);
+
+toggleVideoButton.addEventListener('click', () => {
+    if (localStream) {
+        const videoTrack = localStream.getVideoTracks()[0];
+        if (videoTrack) {
+            isVideoEnabled = !isVideoEnabled;
+            videoTrack.enabled = isVideoEnabled;
+            toggleVideoButton.textContent = isVideoEnabled ? 'Disable Video' : 'Enable Video';
+        }
+    }
+});
+
+function sendMessage() {
+    const message = messageInput.value.trim();
+    if (message && currentRoom) {
+        socket.emit('message', {
+            userId,
+            room: currentRoom,
+            message
+        });
+        
+        // Add message to chat box
+        const messageElement = document.createElement('div');
+        messageElement.className = 'message sent';
+        messageElement.textContent = `You: ${message}`;
+        chatBox.appendChild(messageElement);
+        chatBox.scrollTop = chatBox.scrollHeight;
+        
+        messageInput.value = '';
+    }
+}
+
+async function createPeerConnection() {
+    const configuration = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' }
+        ]
+    };
+
+    const pc = new RTCPeerConnection(configuration);
+    
+    pc.onicecandidate = (event) => {
+        if (event.candidate) {
+            socket.emit('ice_candidate', {
+                userId,
+                candidate: event.candidate
+            });
+        }
+    };
+    
+    pc.ontrack = (event) => {
+        if (event.streams && event.streams[0]) {
+            remoteVideo.srcObject = event.streams[0];
+        }
+    };
+    
+    pc.oniceconnectionstatechange = () => {
+        console.log('ICE Connection State:', pc.iceConnectionState);
+        if (pc.iceConnectionState === 'disconnected') {
+            updateStatus('Video connection lost. Try starting a new chat.');
+        }
+    };
+    
+    return pc;
+}
