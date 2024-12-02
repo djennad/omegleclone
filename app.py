@@ -1,9 +1,10 @@
-from flask import Flask, render_template
+from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import random
 import string
 import os
 import logging
+from engineio.async_drivers import gevent
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -11,7 +12,15 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
-socketio = SocketIO(app, async_mode='gevent', cors_allowed_origins="*", logger=True, engineio_logger=True)
+socketio = SocketIO(app, 
+                   async_mode='gevent',
+                   cors_allowed_origins="*",
+                   logger=True,
+                   engineio_logger=True,
+                   ping_timeout=60,
+                   ping_interval=25,
+                   max_http_buffer_size=1e8,
+                   manage_session=False)
 
 # Store waiting users and active pairs
 waiting_users = []
@@ -116,4 +125,4 @@ def handle_disconnect():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"Starting server on port {port}")
-    socketio.run(app, host='0.0.0.0', port=port)
+    socketio.run(app, host='0.0.0.0', port=port, log_output=True)
