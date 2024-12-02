@@ -1,7 +1,4 @@
-import eventlet
-eventlet.monkey_patch()
-
-from flask import Flask, render_template, request
+from flask import Flask, render_template
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import random
 import string
@@ -9,26 +6,16 @@ import os
 import logging
 
 # Set up logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
-socketio = SocketIO(app, 
-                   async_mode='eventlet',
-                   cors_allowed_origins="*",
-                   logger=True,
-                   engineio_logger=True,
-                   ping_timeout=60,
-                   ping_interval=25)
+socketio = SocketIO(app, async_mode='gevent', cors_allowed_origins="*", logger=True, engineio_logger=True)
 
 # Store waiting users and active pairs
 waiting_users = []
 active_pairs = {}
-
-@app.route('/favicon.ico')
-def favicon():
-    return '', 204
 
 @app.route('/')
 def index():
