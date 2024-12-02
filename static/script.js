@@ -1,10 +1,16 @@
 const socket = io({
-    transports: ['polling', 'websocket'],
+    transports: ['websocket', 'polling'],
     upgrade: true,
     reconnection: true,
     reconnectionAttempts: 5,
     reconnectionDelay: 1000,
-    timeout: 60000
+    timeout: 60000,
+    forceNew: false,
+    path: '/socket.io',
+    rememberUpgrade: true,
+    pingInterval: 25000,
+    pingTimeout: 60000,
+    autoConnect: true
 });
 
 const userId = Math.random().toString(36).substr(2, 9);
@@ -18,6 +24,11 @@ let localTracks = new Set();
 let isConnecting = false;
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RETRY_DELAY = 2000;
+
+// Add connection state tracking
+let connectionAttempts = 0;
+const MAX_CONNECTION_ATTEMPTS = 3;
+const CONNECTION_RETRY_DELAY = 5000;
 
 const messageInput = document.getElementById('message-input');
 const sendButton = document.getElementById('send-button');
@@ -115,9 +126,9 @@ async function addLocalTracks(pc) {
 
 // Socket event handlers
 socket.on('connect', () => {
+    console.log('Connected to server');
+    connectionAttempts = 0;
     updateStatus('Connected to server');
-    reconnectAttempts = 0;
-    isConnecting = false;
     
     setupMediaStream().then(() => {
         startNewChat();
@@ -129,24 +140,29 @@ socket.on('connect', () => {
 
 socket.on('connect_error', (error) => {
     console.error('Connection error:', error);
-    updateStatus('Connection error. Retrying...');
-    reconnectAttempts++;
+    connectionAttempts++;
     
-    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-        updateStatus('Failed to connect after multiple attempts. Please refresh the page.');
+    if (connectionAttempts < MAX_CONNECTION_ATTEMPTS) {
+        updateStatus(`Connection error. Retrying (${connectionAttempts}/${MAX_CONNECTION_ATTEMPTS})...`);
+        setTimeout(() => {
+            socket.connect();
+        }, CONNECTION_RETRY_DELAY);
+    } else {
+        updateStatus('Failed to establish connection. Please refresh the page.');
         socket.disconnect();
     }
 });
 
-socket.on('disconnect', () => {
-    updateStatus('Disconnected from server. Reconnecting...');
+socket.on('disconnect', (reason) => {
+    console.log('Disconnected:', reason);
+    updateStatus('Disconnected from server. Attempting to reconnect...');
     cleanupPeerConnection();
     
-    if (!isConnecting && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-        isConnecting = true;
+    if (reason === 'io server disconnect') {
+        // Server disconnected us, retry connection
         setTimeout(() => {
             socket.connect();
-        }, RETRY_DELAY);
+        }, CONNECTION_RETRY_DELAY);
     }
 });
 

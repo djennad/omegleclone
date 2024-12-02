@@ -19,6 +19,7 @@ app.config['SECRET_KEY'] = ''.join(random.choices(string.ascii_letters + string.
 app.config['DEBUG'] = True
 app.config['PROPAGATE_EXCEPTIONS'] = True
 
+# Configure SocketIO with WebSocket support
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
@@ -29,7 +30,12 @@ socketio = SocketIO(
     ping_interval=25000,
     max_http_buffer_size=1000000,
     allow_upgrades=True,
-    transports=['polling', 'websocket']
+    transports=['websocket', 'polling'],
+    websocket_ping_interval=10,
+    websocket_ping_timeout=30,
+    websocket_max_message_size=1024 * 1024,
+    http_compression=True,
+    compression_threshold=1024
 )
 
 # Store user states

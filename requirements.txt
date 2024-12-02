@@ -8,3 +8,4 @@ gevent-websocket==0.10.1
 Werkzeug==2.0.1
 click==7.1.2
 greenlet==1.1.2
+eventlet==0.33.3
