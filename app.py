@@ -1,15 +1,15 @@
+import eventlet
+eventlet.monkey_patch()
+
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import random
 import string
 import os
 import logging
-import eventlet
-
-eventlet.monkey_patch()
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -20,9 +20,7 @@ socketio = SocketIO(app,
                    logger=True,
                    engineio_logger=True,
                    ping_timeout=60,
-                   ping_interval=25,
-                   max_http_buffer_size=1e8,
-                   manage_session=False)
+                   ping_interval=25)
 
 # Store waiting users and active pairs
 waiting_users = []
@@ -131,4 +129,4 @@ def handle_disconnect():
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"Starting server on port {port}")
-    socketio.run(app, host='0.0.0.0', port=port, log_output=True)
+    socketio.run(app, host='0.0.0.0', port=port)
