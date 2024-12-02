@@ -6,6 +6,8 @@ import os
 import logging
 from datetime import datetime
 from engineio.payload import Payload
+from gevent import monkey
+monkey.patch_all()
 
 # Increase max payload size
 Payload.max_decode_packets = 50
@@ -17,6 +19,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['SECRET_KEY'] = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
 app.config['DEBUG'] = True
+app.config['PROPAGATE_EXCEPTIONS'] = True
 
 socketio = SocketIO(
     app,
@@ -28,7 +31,9 @@ socketio = SocketIO(
     ping_interval=25000,
     max_http_buffer_size=1000000,
     allow_upgrades=True,
-    transports=['polling', 'websocket']
+    transports=['polling', 'websocket'],
+    always_connect=True,
+    manage_session=True
 )
 
 # Store waiting users and active pairs with timestamps
