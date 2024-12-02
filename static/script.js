@@ -154,6 +154,7 @@ socket.on('chat_start', async (data) => {
     updateStatus('Connected! Starting video...');
     
     try {
+        cleanupPeerConnection();
         peerConnection = await createPeerConnection();
         await addLocalTracks(peerConnection);
         
@@ -175,21 +176,11 @@ socket.on('chat_start', async (data) => {
 
 socket.on('video_offer', async (data) => {
     try {
-        isInitiator = false;
-        if (!peerConnection) {
-            peerConnection = await createPeerConnection();
-        }
-
-        const offerDesc = new RTCSessionDescription(data.offer);
-        if (peerConnection.signalingState !== "stable") {
-            await Promise.all([
-                peerConnection.setLocalDescription({type: "rollback"}),
-                peerConnection.setRemoteDescription(offerDesc)
-            ]);
-        } else {
-            await peerConnection.setRemoteDescription(offerDesc);
-        }
+        cleanupPeerConnection();
+        peerConnection = await createPeerConnection();
         
+        const offerDesc = new RTCSessionDescription(data.offer);
+        await peerConnection.setRemoteDescription(offerDesc);
         await addLocalTracks(peerConnection);
         
         // Create and send answer
@@ -207,9 +198,16 @@ socket.on('video_offer', async (data) => {
 
 socket.on('video_answer', async (data) => {
     try {
-        if (peerConnection && peerConnection.signalingState !== "closed") {
-            const answerDesc = new RTCSessionDescription(data.answer);
+        if (!peerConnection) {
+            console.error('No peer connection when receiving answer');
+            return;
+        }
+        
+        const answerDesc = new RTCSessionDescription(data.answer);
+        if (peerConnection.signalingState === "have-local-offer") {
             await peerConnection.setRemoteDescription(answerDesc);
+        } else {
+            console.warn('Unexpected signaling state:', peerConnection.signalingState);
         }
     } catch (error) {
         console.error('Error handling video answer:', error);
