@@ -3,16 +3,28 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 import random
 import string
 import os
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
-socketio = SocketIO(app, 
-                   cors_allowed_origins="*",
-                   async_mode='gevent',
-                   ping_timeout=60,
-                   ping_interval=25,
-                   logger=True,
-                   engineio_logger=True)
+app.config['DEBUG'] = True
+
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode='gevent',
+    logger=True,
+    engineio_logger=True,
+    ping_timeout=60000,
+    ping_interval=25000,
+    max_http_buffer_size=1000000,
+    allow_upgrades=True,
+    http_compression=True,
+    websocket_compression=True
+)
 
 # Store waiting users and active pairs
 waiting_users = []
@@ -28,8 +40,8 @@ def favicon():
 
 @socketio.on('connect')
 def handle_connect():
-    print('Client connected')
-    emit('connected')
+    app.logger.info('Client connected')
+    emit('connected', {'status': 'connected'})
 
 @socketio.on('join')
 def on_join(data):
@@ -102,4 +114,9 @@ def handle_disconnect():
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
-    socketio.run(app, host='0.0.0.0', port=port)
+    socketio.run(app, 
+                host='0.0.0.0', 
+                port=port,
+                debug=True,
+                use_reloader=False,
+                log_output=True)

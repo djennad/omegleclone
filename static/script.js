@@ -1,9 +1,12 @@
 const socket = io({
-    transports: ['websocket'],
-    upgrade: false,
+    transports: ['polling', 'websocket'],
+    upgrade: true,
     reconnection: true,
     reconnectionAttempts: 5,
-    reconnectionDelay: 1000
+    reconnectionDelay: 1000,
+    timeout: 60000,
+    autoConnect: true,
+    forceNew: true
 });
 
 const userId = Math.random().toString(36).substr(2, 9);
@@ -11,6 +14,8 @@ let currentRoom = null;
 let localStream = null;
 let peerConnection = null;
 let isVideoEnabled = false;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
 
 const messageInput = document.getElementById('message-input');
 const sendButton = document.getElementById('send-button');
@@ -98,32 +103,50 @@ async function startNewChat() {
     socket.emit('join', { userId: userId });
 }
 
+function updateStatus(message) {
+    console.log(message);
+    statusDiv.textContent = message;
+}
+
 // Socket event handlers
 socket.on('connect', () => {
-    console.log('Connected to server');
-    statusDiv.textContent = 'Connected to server';
+    updateStatus('Connected to server');
+    reconnectAttempts = 0;
     setupMediaStream().then(() => {
         startNewChat();
+    }).catch(error => {
+        console.error('Media stream error:', error);
+        updateStatus('Failed to access camera/microphone');
     });
 });
 
 socket.on('connect_error', (error) => {
     console.error('Connection error:', error);
-    statusDiv.textContent = 'Connection error. Retrying...';
+    updateStatus('Connection error. Retrying...');
+    reconnectAttempts++;
+    
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        updateStatus('Failed to connect after multiple attempts. Please refresh the page.');
+        socket.disconnect();
+    }
 });
 
 socket.on('disconnect', () => {
-    console.log('Disconnected from server');
-    statusDiv.textContent = 'Disconnected from server. Reconnecting...';
+    updateStatus('Disconnected from server. Reconnecting...');
+});
+
+socket.on('connected', (data) => {
+    console.log('Server acknowledged connection:', data);
+    updateStatus('Connected and ready');
 });
 
 socket.on('waiting', () => {
-    statusDiv.textContent = 'Waiting for someone to join...';
+    updateStatus('Waiting for someone to join...');
 });
 
 socket.on('chat_start', async (data) => {
     currentRoom = data.room;
-    statusDiv.textContent = 'Connected! Starting video...';
+    updateStatus('Connected! Starting video...');
     
     peerConnection = await createPeerConnection();
     
@@ -171,7 +194,7 @@ socket.on('message', (data) => {
 });
 
 socket.on('partner_disconnected', () => {
-    statusDiv.textContent = 'Partner disconnected. Start a new chat!';
+    updateStatus('Partner disconnected. Start a new chat!');
     messageInput.disabled = true;
     sendButton.disabled = true;
     currentRoom = null;
