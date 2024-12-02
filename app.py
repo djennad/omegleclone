@@ -4,7 +4,9 @@ import random
 import string
 import os
 import logging
-from engineio.async_drivers import gevent
+import eventlet
+
+eventlet.monkey_patch()
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -13,7 +15,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['SECRET_KEY'] = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
 socketio = SocketIO(app, 
-                   async_mode='gevent',
+                   async_mode='eventlet',
                    cors_allowed_origins="*",
                    logger=True,
                    engineio_logger=True,
@@ -25,6 +27,10 @@ socketio = SocketIO(app,
 # Store waiting users and active pairs
 waiting_users = []
 active_pairs = {}
+
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
 
 @app.route('/')
 def index():

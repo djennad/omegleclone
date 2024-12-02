@@ -2,7 +2,11 @@ const socket = io({
     reconnection: true,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000,
-    reconnectionAttempts: 5
+    reconnectionAttempts: 5,
+    transports: ['websocket', 'polling'],
+    upgrade: true,
+    rememberUpgrade: true,
+    timeout: 60000
 });
 
 const userId = Math.random().toString(36).substr(2, 9);
