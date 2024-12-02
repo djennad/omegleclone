@@ -15,6 +15,7 @@ let localStream = null;
 let peerConnection = null;
 let isVideoEnabled = false;
 let reconnectAttempts = 0;
+let isInitiator = false;
 const MAX_RECONNECT_ATTEMPTS = 5;
 
 const messageInput = document.getElementById('message-input');
@@ -49,9 +50,7 @@ async function setupMediaStream() {
 }
 
 function startNewChat() {
-    if (currentRoom) {
-        socket.emit('leave', { userId });
-    }
+    cleanupPeerConnection();
     
     // Reset UI
     chatBox.innerHTML = '';
@@ -63,6 +62,20 @@ function startNewChat() {
     // Join new chat
     updateStatus('Looking for a partner...');
     socket.emit('join', { userId });
+}
+
+function cleanupPeerConnection() {
+    if (peerConnection) {
+        peerConnection.onicecandidate = null;
+        peerConnection.ontrack = null;
+        peerConnection.oniceconnectionstatechange = null;
+        peerConnection.close();
+        peerConnection = null;
+    }
+    if (currentRoom) {
+        socket.emit('leave', { userId });
+        currentRoom = null;
+    }
 }
 
 // Socket event handlers
@@ -90,10 +103,7 @@ socket.on('connect_error', (error) => {
 
 socket.on('disconnect', () => {
     updateStatus('Disconnected from server. Reconnecting...');
-    if (currentRoom) {
-        socket.emit('leave', { userId });
-        currentRoom = null;
-    }
+    cleanupPeerConnection();
 });
 
 socket.on('connected', (data) => {
@@ -107,6 +117,7 @@ socket.on('waiting', () => {
 
 socket.on('chat_start', async (data) => {
     currentRoom = data.room;
+    isInitiator = true;
     messageInput.disabled = false;
     sendButton.disabled = false;
     updateStatus('Connected! Starting video...');
@@ -119,7 +130,10 @@ socket.on('chat_start', async (data) => {
         });
         
         // Create and send offer
-        const offer = await peerConnection.createOffer();
+        const offer = await peerConnection.createOffer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: true
+        });
         await peerConnection.setLocalDescription(offer);
         socket.emit('video_offer', {
             userId,
@@ -133,8 +147,20 @@ socket.on('chat_start', async (data) => {
 
 socket.on('video_offer', async (data) => {
     try {
-        peerConnection = await createPeerConnection();
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+        isInitiator = false;
+        if (!peerConnection) {
+            peerConnection = await createPeerConnection();
+        }
+
+        const offerDesc = new RTCSessionDescription(data.offer);
+        if (peerConnection.signalingState !== "stable") {
+            await Promise.all([
+                peerConnection.setLocalDescription({type: "rollback"}),
+                peerConnection.setRemoteDescription(offerDesc)
+            ]);
+        } else {
+            await peerConnection.setRemoteDescription(offerDesc);
+        }
         
         // Add local stream
         localStream.getTracks().forEach(track => {
@@ -150,12 +176,16 @@ socket.on('video_offer', async (data) => {
         });
     } catch (error) {
         console.error('Error handling video offer:', error);
+        updateStatus('Failed to establish video connection');
     }
 });
 
 socket.on('video_answer', async (data) => {
     try {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+        if (peerConnection && peerConnection.signalingState !== "closed") {
+            const answerDesc = new RTCSessionDescription(data.answer);
+            await peerConnection.setRemoteDescription(answerDesc);
+        }
     } catch (error) {
         console.error('Error handling video answer:', error);
     }
@@ -163,7 +193,7 @@ socket.on('video_answer', async (data) => {
 
 socket.on('ice_candidate', async (data) => {
     try {
-        if (data.candidate) {
+        if (peerConnection && data.candidate && peerConnection.remoteDescription) {
             await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
         }
     } catch (error) {
@@ -173,14 +203,7 @@ socket.on('ice_candidate', async (data) => {
 
 socket.on('partner_disconnected', () => {
     updateStatus('Partner disconnected. Start a new chat!');
-    messageInput.disabled = true;
-    sendButton.disabled = true;
-    if (peerConnection) {
-        peerConnection.close();
-        peerConnection = null;
-    }
-    remoteVideo.srcObject = null;
-    currentRoom = null;
+    cleanupPeerConnection();
 });
 
 // UI Event Listeners
@@ -256,8 +279,9 @@ async function createPeerConnection() {
     
     pc.oniceconnectionstatechange = () => {
         console.log('ICE Connection State:', pc.iceConnectionState);
-        if (pc.iceConnectionState === 'disconnected') {
+        if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
             updateStatus('Video connection lost. Try starting a new chat.');
+            cleanupPeerConnection();
         }
     };
     
