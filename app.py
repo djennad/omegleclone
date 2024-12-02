@@ -1,10 +1,14 @@
-from flask import Flask, render_template
+from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit, join_room, leave_room, disconnect
 import random
 import string
 import os
 import logging
 from datetime import datetime
+from engineio.payload import Payload
+
+# Increase max payload size
+Payload.max_decode_packets = 50
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -23,13 +27,15 @@ socketio = SocketIO(
     ping_timeout=60000,
     ping_interval=25000,
     max_http_buffer_size=1000000,
-    allow_upgrades=True
+    allow_upgrades=True,
+    transports=['polling', 'websocket']
 )
 
 # Store waiting users and active pairs with timestamps
 waiting_users = {}  # {user_id: timestamp}
 active_pairs = {}   # {room: {user1: id1, user2: id2}}
 user_rooms = {}     # {user_id: room}
+user_sids = {}      # {user_id: session_id}
 
 def clean_inactive_users():
     """Remove users who have been waiting too long (more than 5 minutes)"""
@@ -38,6 +44,8 @@ def clean_inactive_users():
                      if current_time - timestamp > 300]
     for uid in inactive_users:
         del waiting_users[uid]
+        if uid in user_sids:
+            del user_sids[uid]
     return len(inactive_users)
 
 def find_partner(user_id):
@@ -58,6 +66,7 @@ def find_partner(user_id):
         user_rooms[user_id] = room
         user_rooms[partner_id] = room
         
+        logger.info(f"Matched users {user_id} and {partner_id} in room {room}")
         return room, partner_id
     return None, None
 
@@ -71,26 +80,35 @@ def favicon():
 
 @socketio.on('connect')
 def handle_connect():
-    logger.info('Client connected')
-    emit('connected', {'status': 'connected'})
+    sid = request.sid
+    logger.info(f'Client connected with session ID: {sid}')
+    emit('connected', {'status': 'connected', 'sid': sid})
 
 @socketio.on('disconnect')
 def handle_disconnect():
+    sid = request.sid
     user_id = None
-    for uid, room in user_rooms.items():
-        if room in active_pairs:
-            pair = active_pairs[room]
-            if uid in [pair['user1'], pair['user2']]:
-                user_id = uid
-                break
+    
+    # Find user_id by session id
+    for uid, stored_sid in user_sids.items():
+        if stored_sid == sid:
+            user_id = uid
+            break
     
     if user_id:
+        logger.info(f'User {user_id} disconnected')
         handle_leave({'userId': user_id})
+        if user_id in user_sids:
+            del user_sids[user_id]
 
 @socketio.on('join')
 def handle_join(data):
     user_id = data['userId']
-    logger.info(f'User {user_id} joining')
+    sid = request.sid
+    logger.info(f'User {user_id} joining with session {sid}')
+    
+    # Store user's session id
+    user_sids[user_id] = sid
     
     # Add user to waiting list with timestamp
     waiting_users[user_id] = datetime.now().timestamp()
@@ -120,7 +138,9 @@ def handle_leave(data):
             # Notify other user
             pair = active_pairs[room]
             other_user = pair['user2'] if user_id == pair['user1'] else pair['user1']
-            emit('partner_disconnected', room=room)
+            
+            if other_user in user_sids:
+                emit('partner_disconnected', room=room)
             
             # Clean up
             del active_pairs[room]
@@ -130,6 +150,7 @@ def handle_leave(data):
                 del user_rooms[other_user]
             
             leave_room(room)
+            logger.info(f'Room {room} closed due to user {user_id} leaving')
 
 @socketio.on('message')
 def handle_message(data):
@@ -148,7 +169,8 @@ def handle_video_offer(data):
         if room in active_pairs:
             pair = active_pairs[room]
             other_user = pair['user2'] if user_id == pair['user1'] else pair['user1']
-            emit('video_offer', {'offer': data['offer']}, to=other_user)
+            if other_user in user_sids:
+                emit('video_offer', {'offer': data['offer']}, room=room)
 
 @socketio.on('video_answer')
 def handle_video_answer(data):
@@ -158,7 +180,8 @@ def handle_video_answer(data):
         if room in active_pairs:
             pair = active_pairs[room]
             other_user = pair['user2'] if user_id == pair['user1'] else pair['user1']
-            emit('video_answer', {'answer': data['answer']}, to=other_user)
+            if other_user in user_sids:
+                emit('video_answer', {'answer': data['answer']}, room=room)
 
 @socketio.on('ice_candidate')
 def handle_ice_candidate(data):
@@ -168,7 +191,8 @@ def handle_ice_candidate(data):
         if room in active_pairs:
             pair = active_pairs[room]
             other_user = pair['user2'] if user_id == pair['user1'] else pair['user1']
-            emit('ice_candidate', {'candidate': data['candidate']}, to=other_user)
+            if other_user in user_sids:
+                emit('ice_candidate', {'candidate': data['candidate']}, room=room)
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
