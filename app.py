@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, session
 from flask_socketio import SocketIO, emit, join_room, leave_room, disconnect
 import random
 import string
@@ -9,10 +9,8 @@ from engineio.payload import Payload
 from gevent import monkey
 monkey.patch_all()
 
-# Increase max payload size
+# Increase max payload size and configure logging
 Payload.max_decode_packets = 50
-
-# Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
@@ -31,24 +29,18 @@ socketio = SocketIO(
     ping_interval=25000,
     max_http_buffer_size=1000000,
     allow_upgrades=True,
-    transports=['polling', 'websocket'],
-    always_connect=True,
-    manage_session=True
+    transports=['polling', 'websocket']
 )
 
-# Store waiting users and active pairs with timestamps
-waiting_users = {}  # {user_id: timestamp}
-active_pairs = {}   # {room: {user1: id1, user2: id2}}
-user_rooms = {}     # {user_id: room}
-user_sids = {}      # {user_id: session_id}
+# Store user states
+waiting_users = set()  # Set of waiting user IDs
+active_pairs = {}      # {room: {user1: id1, user2: id2}}
+user_rooms = {}        # {user_id: room}
+user_sids = {}         # {user_id: sid}
 
 @app.route('/')
 def index():
     return render_template('index.html')
-
-@app.route('/favicon.ico')
-def favicon():
-    return '', 204
 
 @socketio.on('connect')
 def handle_connect():
@@ -60,136 +52,193 @@ def handle_connect():
 def handle_disconnect():
     sid = request.sid
     logger.info(f'Client disconnected with SID: {sid}')
+    
+    # Find user by SID and handle cleanup
+    disconnected_user = None
     for user_id, user_sid in user_sids.items():
         if user_sid == sid:
-            handle_leave({'userId': user_id})
+            disconnected_user = user_id
             break
+    
+    if disconnected_user:
+        handle_leave({'userId': disconnected_user})
+
+def find_available_partner(user_id):
+    """Find an available partner for chat"""
+    if not waiting_users:
+        return None
+    
+    # Find a partner that isn't the same user
+    for partner_id in waiting_users:
+        if partner_id != user_id:
+            waiting_users.remove(partner_id)
+            return partner_id
+    return None
 
 @socketio.on('join')
 def handle_join(data):
-    user_id = data.get('userId')
-    if not user_id:
-        return
-    
-    # Store user's session ID
-    user_sids[user_id] = request.sid
-    
-    # Remove user from any existing room
-    if user_id in user_rooms:
-        old_room = user_rooms[user_id]
-        if old_room in active_pairs:
-            del active_pairs[old_room]
-        del user_rooms[user_id]
-    
-    # If someone is waiting, pair them
-    if waiting_users:
-        partner_id = next(iter(waiting_users))
-        if partner_id != user_id:  # Don't pair with self
-            del waiting_users[partner_id]
+    try:
+        user_id = data.get('userId')
+        if not user_id:
+            logger.error('No user ID provided')
+            return
+        
+        logger.info(f'User {user_id} joining')
+        
+        # Store user's session ID
+        user_sids[user_id] = request.sid
+        
+        # Remove from any existing room
+        if user_id in user_rooms:
+            old_room = user_rooms[user_id]
+            if old_room in active_pairs:
+                # Notify old partner
+                pair = active_pairs[old_room]
+                old_partner = pair['user1'] if user_id == pair['user2'] else pair['user2']
+                if old_partner in user_sids:
+                    emit('partner_disconnected', room=user_sids[old_partner])
+                
+                del active_pairs[old_room]
+                if old_partner in user_rooms:
+                    del user_rooms[old_partner]
             
+            leave_room(old_room)
+            del user_rooms[user_id]
+        
+        # Try to find a partner
+        partner_id = find_available_partner(user_id)
+        
+        if partner_id:
             # Create new room
             room = f"room_{random.randint(1000, 9999)}"
+            
+            # Set up room
             active_pairs[room] = {'user1': partner_id, 'user2': user_id}
             user_rooms[partner_id] = room
             user_rooms[user_id] = room
             
-            # Join both users to room
+            # Join room
             join_room(room)
-            partner_sid = user_sids.get(partner_id)
-            if partner_sid:
-                join_room(room, sid=partner_sid)
+            if partner_id in user_sids:
+                join_room(room, sid=user_sids[partner_id])
             
-            # Notify both users
+            logger.info(f'Matched users {user_id} and {partner_id} in room {room}')
             emit('chat_start', {'room': room}, room=room)
-            return
+        else:
+            # Add to waiting list
+            waiting_users.add(user_id)
+            emit('waiting')
+            logger.info(f'User {user_id} added to waiting list')
     
-    # If no partner found, add to waiting list
-    waiting_users[user_id] = datetime.now()
-    emit('waiting')
+    except Exception as e:
+        logger.error(f'Error in handle_join: {str(e)}')
+        emit('error', {'message': 'Failed to join chat'})
 
 @socketio.on('leave')
 def handle_leave(data):
-    user_id = data.get('userId')
-    if not user_id:
-        return
-    
-    # Remove from waiting list if present
-    if user_id in waiting_users:
-        del waiting_users[user_id]
-    
-    # Handle active chat disconnection
-    if user_id in user_rooms:
-        room = user_rooms[user_id]
-        if room in active_pairs:
-            # Find and notify partner
-            pair = active_pairs[room]
-            partner_id = pair['user1'] if user_id == pair['user2'] else pair['user2']
-            if partner_id in user_sids:
-                emit('partner_disconnected', room=user_sids[partner_id])
-            
-            # Cleanup room
-            del active_pairs[room]
-            if partner_id in user_rooms:
-                del user_rooms[partner_id]
+    try:
+        user_id = data.get('userId')
+        if not user_id:
+            return
         
-        # Leave room and cleanup
-        leave_room(room)
-        del user_rooms[user_id]
-    
-    # Cleanup session
-    if user_id in user_sids:
-        del user_sids[user_id]
+        logger.info(f'User {user_id} leaving')
+        
+        # Remove from waiting list
+        if user_id in waiting_users:
+            waiting_users.remove(user_id)
+        
+        # Handle active chat cleanup
+        if user_id in user_rooms:
+            room = user_rooms[user_id]
+            if room in active_pairs:
+                pair = active_pairs[room]
+                partner_id = pair['user1'] if user_id == pair['user2'] else pair['user2']
+                
+                # Notify partner
+                if partner_id in user_sids:
+                    emit('partner_disconnected', room=user_sids[partner_id])
+                
+                # Cleanup room
+                del active_pairs[room]
+                if partner_id in user_rooms:
+                    del user_rooms[partner_id]
+            
+            leave_room(room)
+            del user_rooms[user_id]
+        
+        # Cleanup session
+        if user_id in user_sids:
+            del user_sids[user_id]
+        
+    except Exception as e:
+        logger.error(f'Error in handle_leave: {str(e)}')
 
 @socketio.on('message')
 def handle_message(data):
-    user_id = data.get('userId')
-    room = data.get('room')
-    message = data.get('message')
+    try:
+        user_id = data.get('userId')
+        room = data.get('room')
+        message = data.get('message')
+        
+        if user_id and room and message and room in active_pairs:
+            emit('message', {
+                'userId': user_id,
+                'message': message
+            }, room=room, include_self=False)
     
-    if user_id and room and message and room in active_pairs:
-        emit('message', {
-            'userId': user_id,
-            'message': message
-        }, room=room, include_self=False)
+    except Exception as e:
+        logger.error(f'Error in handle_message: {str(e)}')
 
 @socketio.on('video_offer')
 def handle_video_offer(data):
-    user_id = data.get('userId')
-    offer = data.get('offer')
+    try:
+        user_id = data.get('userId')
+        offer = data.get('offer')
+        
+        if user_id in user_rooms:
+            room = user_rooms[user_id]
+            if room in active_pairs:
+                emit('video_offer', {
+                    'userId': user_id,
+                    'offer': offer
+                }, room=room, include_self=False)
     
-    if user_id in user_rooms:
-        room = user_rooms[user_id]
-        if room in active_pairs:
-            emit('video_offer', {
-                'userId': user_id,
-                'offer': offer
-            }, room=room, include_self=False)
+    except Exception as e:
+        logger.error(f'Error in handle_video_offer: {str(e)}')
 
 @socketio.on('video_answer')
 def handle_video_answer(data):
-    user_id = data.get('userId')
-    answer = data.get('answer')
+    try:
+        user_id = data.get('userId')
+        answer = data.get('answer')
+        
+        if user_id in user_rooms:
+            room = user_rooms[user_id]
+            if room in active_pairs:
+                emit('video_answer', {
+                    'userId': user_id,
+                    'answer': answer
+                }, room=room, include_self=False)
     
-    if user_id in user_rooms:
-        room = user_rooms[user_id]
-        if room in active_pairs:
-            emit('video_answer', {
-                'userId': user_id,
-                'answer': answer
-            }, room=room, include_self=False)
+    except Exception as e:
+        logger.error(f'Error in handle_video_answer: {str(e)}')
 
 @socketio.on('ice_candidate')
 def handle_ice_candidate(data):
-    user_id = data.get('userId')
-    candidate = data.get('candidate')
+    try:
+        user_id = data.get('userId')
+        candidate = data.get('candidate')
+        
+        if user_id in user_rooms:
+            room = user_rooms[user_id]
+            if room in active_pairs:
+                emit('ice_candidate', {
+                    'userId': user_id,
+                    'candidate': candidate
+                }, room=room, include_self=False)
     
-    if user_id in user_rooms:
-        room = user_rooms[user_id]
-        if room in active_pairs:
-            emit('ice_candidate', {
-                'userId': user_id,
-                'candidate': candidate
-            }, room=room, include_self=False)
+    except Exception as e:
+        logger.error(f'Error in handle_ice_candidate: {str(e)}')
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

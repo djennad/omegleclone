@@ -4,9 +4,7 @@ const socket = io({
     reconnection: true,
     reconnectionAttempts: 5,
     reconnectionDelay: 1000,
-    timeout: 60000,
-    autoConnect: true,
-    forceNew: true
+    timeout: 60000
 });
 
 const userId = Math.random().toString(36).substr(2, 9);
@@ -17,7 +15,9 @@ let isVideoEnabled = false;
 let reconnectAttempts = 0;
 let isInitiator = false;
 let localTracks = new Set();
+let isConnecting = false;
 const MAX_RECONNECT_ATTEMPTS = 5;
+const RETRY_DELAY = 2000;
 
 const messageInput = document.getElementById('message-input');
 const sendButton = document.getElementById('send-button');
@@ -54,6 +54,10 @@ async function setupMediaStream() {
 }
 
 function startNewChat() {
+    if (isConnecting) {
+        return;
+    }
+    
     cleanupPeerConnection();
     
     // Reset UI
@@ -113,6 +117,8 @@ async function addLocalTracks(pc) {
 socket.on('connect', () => {
     updateStatus('Connected to server');
     reconnectAttempts = 0;
+    isConnecting = false;
+    
     setupMediaStream().then(() => {
         startNewChat();
     }).catch(error => {
@@ -135,11 +141,21 @@ socket.on('connect_error', (error) => {
 socket.on('disconnect', () => {
     updateStatus('Disconnected from server. Reconnecting...');
     cleanupPeerConnection();
+    
+    if (!isConnecting && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        isConnecting = true;
+        setTimeout(() => {
+            socket.connect();
+        }, RETRY_DELAY);
+    }
 });
 
-socket.on('connected', (data) => {
-    console.log('Server acknowledged connection:', data);
-    updateStatus('Connected and ready');
+socket.on('error', (data) => {
+    console.error('Server error:', data);
+    updateStatus(data.message || 'An error occurred');
+    if (currentRoom) {
+        startNewChat();
+    }
 });
 
 socket.on('waiting', () => {
@@ -147,8 +163,12 @@ socket.on('waiting', () => {
 });
 
 socket.on('chat_start', async (data) => {
+    if (!data || !data.room) {
+        console.error('Invalid chat_start data');
+        return;
+    }
+    
     currentRoom = data.room;
-    isInitiator = true;
     messageInput.disabled = false;
     sendButton.disabled = false;
     updateStatus('Connected! Starting video...');
@@ -158,19 +178,21 @@ socket.on('chat_start', async (data) => {
         peerConnection = await createPeerConnection();
         await addLocalTracks(peerConnection);
         
-        // Create and send offer
-        const offer = await peerConnection.createOffer({
-            offerToReceiveAudio: true,
-            offerToReceiveVideo: true
-        });
-        await peerConnection.setLocalDescription(offer);
-        socket.emit('video_offer', {
-            userId,
-            offer: offer
-        });
+        if (isInitiator) {
+            const offer = await peerConnection.createOffer({
+                offerToReceiveAudio: true,
+                offerToReceiveVideo: true
+            });
+            await peerConnection.setLocalDescription(offer);
+            socket.emit('video_offer', {
+                userId,
+                offer: offer
+            });
+        }
     } catch (error) {
         console.error('Error setting up WebRTC:', error);
         updateStatus('Failed to setup video chat');
+        startNewChat();
     }
 });
 
@@ -230,7 +252,11 @@ socket.on('partner_disconnected', () => {
 });
 
 // UI Event Listeners
-newChatButton.addEventListener('click', startNewChat);
+newChatButton.addEventListener('click', () => {
+    if (!isConnecting) {
+        startNewChat();
+    }
+});
 
 messageInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
