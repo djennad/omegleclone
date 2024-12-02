@@ -16,6 +16,7 @@ let peerConnection = null;
 let isVideoEnabled = false;
 let reconnectAttempts = 0;
 let isInitiator = false;
+let senders = [];
 const MAX_RECONNECT_ATTEMPTS = 5;
 
 const messageInput = document.getElementById('message-input');
@@ -34,6 +35,9 @@ function updateStatus(message) {
 
 async function setupMediaStream() {
     try {
+        if (localStream) {
+            localStream.getTracks().forEach(track => track.stop());
+        }
         localStream = await navigator.mediaDevices.getUserMedia({
             video: true,
             audio: true
@@ -47,6 +51,30 @@ async function setupMediaStream() {
         updateStatus('Could not access camera/microphone');
         return false;
     }
+}
+
+function addLocalStreamToPeer() {
+    if (!peerConnection || !localStream) return;
+    
+    // Remove any existing senders
+    senders.forEach(sender => {
+        try {
+            peerConnection.removeTrack(sender);
+        } catch (e) {
+            console.log('Error removing track:', e);
+        }
+    });
+    senders = [];
+    
+    // Add tracks from local stream
+    localStream.getTracks().forEach(track => {
+        try {
+            const sender = peerConnection.addTrack(track, localStream);
+            senders.push(sender);
+        } catch (e) {
+            console.error('Error adding track:', e);
+        }
+    });
 }
 
 function startNewChat() {
@@ -65,11 +93,18 @@ function startNewChat() {
 }
 
 function cleanupPeerConnection() {
+    senders = [];
     if (peerConnection) {
         peerConnection.onicecandidate = null;
         peerConnection.ontrack = null;
         peerConnection.oniceconnectionstatechange = null;
-        peerConnection.close();
+        
+        // Close peer connection
+        try {
+            peerConnection.close();
+        } catch (e) {
+            console.error('Error closing peer connection:', e);
+        }
         peerConnection = null;
     }
     if (currentRoom) {
@@ -124,10 +159,7 @@ socket.on('chat_start', async (data) => {
     
     try {
         peerConnection = await createPeerConnection();
-        // Add local stream
-        localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
-        });
+        addLocalStreamToPeer();
         
         // Create and send offer
         const offer = await peerConnection.createOffer({
@@ -162,10 +194,7 @@ socket.on('video_offer', async (data) => {
             await peerConnection.setRemoteDescription(offerDesc);
         }
         
-        // Add local stream
-        localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
-        });
+        addLocalStreamToPeer();
         
         // Create and send answer
         const answer = await peerConnection.createAnswer();
@@ -218,7 +247,7 @@ messageInput.addEventListener('keypress', (e) => {
 
 sendButton.addEventListener('click', sendMessage);
 
-toggleVideoButton.addEventListener('click', () => {
+toggleVideoButton.addEventListener('click', async () => {
     if (localStream) {
         const videoTrack = localStream.getVideoTracks()[0];
         if (videoTrack) {
