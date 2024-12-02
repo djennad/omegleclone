@@ -16,6 +16,7 @@ let peerConnection = null;
 let isVideoEnabled = false;
 let reconnectAttempts = 0;
 let isInitiator = false;
+let localTracks = new Set();
 const MAX_RECONNECT_ATTEMPTS = 5;
 
 const messageInput = document.getElementById('message-input');
@@ -34,6 +35,9 @@ function updateStatus(message) {
 
 async function setupMediaStream() {
     try {
+        if (localStream) {
+            localStream.getTracks().forEach(track => track.stop());
+        }
         localStream = await navigator.mediaDevices.getUserMedia({
             video: true,
             audio: true
@@ -65,16 +69,43 @@ function startNewChat() {
 }
 
 function cleanupPeerConnection() {
+    localTracks.clear();
     if (peerConnection) {
         peerConnection.onicecandidate = null;
         peerConnection.ontrack = null;
         peerConnection.oniceconnectionstatechange = null;
+        
+        // Close all transceivers
+        if (peerConnection.getTransceivers) {
+            peerConnection.getTransceivers().forEach(transceiver => {
+                if (transceiver.stop) {
+                    transceiver.stop();
+                }
+            });
+        }
+        
         peerConnection.close();
         peerConnection = null;
     }
     if (currentRoom) {
         socket.emit('leave', { userId });
         currentRoom = null;
+    }
+}
+
+async function addLocalTracks(pc) {
+    if (!localStream) return;
+    
+    try {
+        const tracks = localStream.getTracks();
+        for (const track of tracks) {
+            if (!localTracks.has(track.id)) {
+                const sender = pc.addTrack(track, localStream);
+                localTracks.add(track.id);
+            }
+        }
+    } catch (error) {
+        console.error('Error adding local tracks:', error);
     }
 }
 
@@ -124,10 +155,7 @@ socket.on('chat_start', async (data) => {
     
     try {
         peerConnection = await createPeerConnection();
-        // Add local stream
-        localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
-        });
+        await addLocalTracks(peerConnection);
         
         // Create and send offer
         const offer = await peerConnection.createOffer({
@@ -162,10 +190,7 @@ socket.on('video_offer', async (data) => {
             await peerConnection.setRemoteDescription(offerDesc);
         }
         
-        // Add local stream
-        localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
-        });
+        await addLocalTracks(peerConnection);
         
         // Create and send answer
         const answer = await peerConnection.createAnswer();
@@ -218,7 +243,7 @@ messageInput.addEventListener('keypress', (e) => {
 
 sendButton.addEventListener('click', sendMessage);
 
-toggleVideoButton.addEventListener('click', () => {
+toggleVideoButton.addEventListener('click', async () => {
     if (localStream) {
         const videoTrack = localStream.getVideoTracks()[0];
         if (videoTrack) {
